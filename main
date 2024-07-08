@@ -6,10 +6,11 @@ import winsound
 import keyboard
 import tkinter as tk
 from tkinter import messagebox
-import pygetwindow as gw  # ウィンドウ操作のライブラリ
+import pygetwindow as gw
 import configparser
 import pyautogui
 import pandas as pd
+from PIL import ImageFont, ImageDraw, Image
 
 # setting.iniファイルの保存先フォルダ
 config_folder = "C:/Users/hinsyo/Desktop/ショア硬度計_データ取得/src/dist"
@@ -22,13 +23,19 @@ if not os.path.exists(config_folder):
 if not os.path.exists(config_file_path):
     config = configparser.ConfigParser()
     config['DEFAULT'] = {
-        'canny_threshold1': '80',
-        'canny_threshold2': '90',
+        'canny_threshold1': '120',
+        'canny_threshold2': '130',
         'capture_width': '1920',
         'capture_height': '1080',
         'machine_type': 'A1030701',
         'window_width': '960',
-        'window_height': '960'
+        'window_height': '960',
+        'left_value_adjust': '0.4',
+        'right_value_adjust': '40.2',
+        'needle_length': '150',
+        'config_folder': 'C:/Users/hinsyo/Desktop/ショア硬度計_データ取得/src/dist',
+        'conversion_table': 'C:/Users/hinsyo/Desktop/ショア硬度計_データ取得/src/dist/換算表',
+        'font_path': 'C:/Windows/Fonts/meiryo.ttc'
     }
 
     with open(config_file_path, 'w') as configfile:
@@ -41,28 +48,44 @@ config.read(config_file_path)
 # 設定値を変数に読み込み
 canny_threshold1 = int(config['DEFAULT']['canny_threshold1'])
 canny_threshold2 = int(config['DEFAULT']['canny_threshold2'])
-
 capture_width = int(config['DEFAULT']['capture_width'])
 capture_height = int(config['DEFAULT']['capture_height'])
-
 machine_type = str(config['DEFAULT']['machine_type'])
-
-# ウィンドウサイズの設定
 window_width = int(config['DEFAULT']['window_width'])
 window_height = int(config['DEFAULT']['window_height'])
+left_value_adjust = float(config['DEFAULT']['left_value_adjust'])
+right_value_adjust = float(config['DEFAULT']['right_value_adjust'])
+needle_length = int(config['DEFAULT']['needle_length'])
+config_folder = str(config['DEFAULT']['config_folder'])
+conversion_table = str(config['DEFAULT']['conversion_table'])
+font_path = str(config['DEFAULT']['font_path'])
 
 # 線検出の閾値
 canny_thresholds = (canny_threshold1, canny_threshold2)
+
+# Pillowのフォント設定
+font1 = ImageFont.truetype(font_path, 36)  # フォントサイズ36
+font2 = ImageFont.truetype(font_path, 50)  # フォントサイズ50
+font3 = ImageFont.truetype(font_path, 100)  # フォントサイズ100
+
+def draw_text(image, text, position, font, color):
+    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_image)
+    draw.text(position, text, font=font, fill=color)
+    return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+
+# 起動中メッセージを表示
+init_frame = np.zeros((window_height, window_width, 3), dtype=np.uint8)
+init_frame = draw_text(init_frame, "起動中です...", (window_width // 2 - 100, window_height // 2), font2, (255, 255, 255))
+cv2.imshow("frame", init_frame)
+cv2.waitKey(1)  # 表示を更新
 
 # カメラのキャプチャ開始と解像度の設定
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, capture_width)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, capture_height)
-
-# カメラが設定された解像度でキャプチャされていることを確認
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-print(f"カメラの解像度: {width}x{height}")
 
 # ウィンドウ表示のトリミング
 def resize_frame(frame):
@@ -76,13 +99,13 @@ def resize_frame(frame):
 if not cap.isOpened():
     root = tk.Tk()
     root.withdraw()  # ウィンドウを非表示にする
-    messagebox.showwarning("警告", "カメラが接続されていません。接続後に再度起動してください。")
+    messagebox.showwarning("警告", "カメラが接続されていません。\n接続後に再度起動してください。")
     root.destroy()
     exit()
     
 # 校正値を読み込む関数
 def load_calibration_data(machine_type):
-    calibration_file_path = f"C:/Users/hinsyo/Desktop/ショア硬度計_データ取得/src/dist/換算表/{machine_type}.csv"
+    calibration_file_path = f"{conversion_table}/{machine_type}.csv"
     
     if not os.path.exists(calibration_file_path):
         messagebox.showwarning("警告", f"{calibration_file_path} が見つかりません。")
@@ -107,8 +130,21 @@ def convert_value(output_value):
         converted_value = calibration_data.loc[calibration_data['測定値'] == output_value, '変換値'].values[0]
         return converted_value
     except IndexError:
-        messagebox.showwarning("警告", "指定された値の変換後の値が見つかりませんでした。")
+        messagebox.showwarning("警告", "換算値が見つかりませんでした。\n換算表を確認してください。")
         return None
+    
+# スペースキー動作のオン・オフ状態
+space_action_enabled = True
+
+# スペースキーが押されたら処理を実行
+keyboard.on_press_key("space", lambda _: space_key_handler() if space_action_enabled else None)
+
+# F4キーが押されたらスペースキーの動作をオン・オフ切り替える
+def toggle_space_action():
+    global space_action_enabled
+    space_action_enabled = not space_action_enabled
+
+keyboard.on_press_key("F4", lambda _: toggle_space_action())
     
 # Tkinterの設定
 root = tk.Tk()
@@ -121,6 +157,12 @@ last_toggle_time = time.time()
 
 # ウィンドウの名前を設定
 window_name = "frame"
+
+def space_key_handler():
+    winsound.Beep(1000, 100)  # ビープ音を鳴らす
+    if last_value is not None:
+        if converted_value is not None:
+            pyautogui.typewrite(str(converted_value) + '\n')  # キーボード入力として出力
 
 while True:
     ret, frame = cap.read()
@@ -136,7 +178,7 @@ while True:
     blurred = cv2.GaussianBlur(frame, (5, 5), 0)
     gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, canny_threshold1, canny_threshold2, apertureSize=3) # 線検出の閾値の設定
-    lines = cv2.HoughLinesP(edges, 1, np.pi/150, 90, minLineLength=90, maxLineGap=10)
+    lines = cv2.HoughLinesP(edges, 1, np.pi/150, needle_length, minLineLength=needle_length, maxLineGap=10)
 
     if lines is not None:
         max_line_length = 0
@@ -147,7 +189,7 @@ while True:
             line_length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
             
             # 線の長さと角度に基づく条件を追加して不要な線を除外
-            if line_length > 100 and (80 <= abs(y2 - y1) <= 400 or 80 <= abs(x2 - x1) <= 400):
+            if line_length > 100 and (needle_length <= abs(y2 - y1) <= 400 or needle_length <= abs(x2 - x1) <= 400):
                 if line_length > max_line_length:
                     max_line_length = line_length
                     selected_line = line[0]
@@ -158,7 +200,7 @@ while True:
             theta_deg = (np.degrees(line_theta) + 360) % 360  # 0～360度に正規化
 
             if 0 <= theta_deg <= 155:
-                calculated_value = 70 + (theta_deg / 155) * 70 - 0.5  # 左半分の出力値調整
+                calculated_value = 70 + (theta_deg / 155) * 70 - left_value_adjust  # 左半分の出力値調整
             elif 305 <= theta_deg <= 320:
                 calculated_value = 70 - ((360 - theta_deg) / 155) * 70                    
             elif 205 <= theta_deg <= 360:
@@ -170,7 +212,7 @@ while True:
                 calculated_value = (calculated_value + 100) % 140  # 反時計回りに100度回転
             else:  # 右半分の場合
                 if 155 <= theta_deg <= 360:
-                    calculated_value = 70 - ((360 - theta_deg) / 155) * 70 + 40.5  # 出力値微調整
+                    calculated_value = 70 - ((360 - theta_deg) / 155) * 70 + right_value_adjust  # 出力値微調整
                 elif 80 <= theta_deg <= 205:
                     calculated_value = 70 + (theta_deg / 100) * 70
                 elif 0 <= theta_deg < 36:
@@ -182,29 +224,79 @@ while True:
                 calculated_value = calculated_value - 60
             else:
                 last_value = calculated_value
+                
+                if machine_type == "A926310": # 元器の場合の補正
+                    last_value = calculated_value - 0.5
 
             if theta_deg > 270 and calculated_value < 30:  # 30以下の処理
                 last_value = calculated_value
-            else:
-                last_value = calculated_value
-
-            if theta_deg < 90 and calculated_value > 110:  # 110以上の処理
-                last_value = calculated_value
-            else:
-                last_value = calculated_value
                 
+                if machine_type == "A926310": # 元器の場合の補正
+                    last_value = calculated_value - 2
+            
+            if theta_deg < 90 and calculated_value > 110:  # 110以上の処理
+                if theta_deg < 12 and calculated_value > 110:
+                    last_value = calculated_value
+                else:
+                    last_value = calculated_value - 1
+            
+            if calculated_value > 71 and machine_type == "A926310": # 元器の場合の補正
+                last_value = calculated_value + 0.5
+            
+            if 88.5 <= theta_deg <= 89:
+                last_value = 70
+            if 87.5 <= theta_deg <= 88.4:
+                last_value = 69
+            if 271 <= theta_deg <= 273.5 and machine_type == "A926310":
+                last_value = 71
+            if theta_deg == 0 and machine_type == "A926310" or theta_deg == 270:
+                last_value = 70
+                                
     if last_value is not None:
         if selected_line is not None:
+            converted_value = convert_value(round(last_value))  # 出力された値を変換
+             
+            # カメラ画面に検出した線の表示
             cv2.line(frame, (x1, y1), (x2, y2), (100, 0, 255), 3)
                     
-        # カメラ画面に小数点以下1桁まで表示
-        cv2.putText(frame, f"Value:{last_value:.1f}", (400, 920), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 200, 50), 5)
+        # カメラ画面に出力した値の表示
+        frame = draw_text(frame, f"Value:", (430, 900), font2, (50, 180, 255))
+        frame = draw_text(frame, f"{round(last_value)}", (600, 850), font3, (100, 200, 255))
+          
+        # converted_value の表示
+        if converted_value is not None:
+            frame = draw_text(frame, f"converted", (780, 820), font1, (50, 160, 255))
+            frame = draw_text(frame, f"value", (860, 860), font1, (50, 160, 255))
+            frame = draw_text(frame, f"⇒", (800, 920), font1, (50, 160, 255))
+            frame = draw_text(frame, f"{converted_value}", (860, 910), font2, (40, 140, 255))
+        else:
+            frame = draw_text(frame, f"N/A", (860, 910), font2, (40, 140, 255))
 
     # 画面中央から上、左、右の端に黄色い点を描画
     center_x, center_y = frame.shape[1] // 2, frame.shape[0] // 2
-    cv2.circle(frame, (center_x, 70), 3, (0, 255, 255), -1)
-    cv2.circle(frame, (center_x - 420, center_y), 3, (0, 255, 255), -1)
-    cv2.circle(frame, (center_x + 410, center_y), 3, (0, 255, 255), -1)
+    cv2.circle(frame, (center_x, 100), 3, (0, 255, 255), -1)
+    if machine_type == "A926310":
+        cv2.circle(frame, (center_x - 420, center_y - 17), 3, (0, 255, 255), -1)
+    else:
+        cv2.circle(frame, (center_x - 420, center_y), 3, (0, 255, 255), -1)
+    
+    if machine_type == "A926310":
+        cv2.circle(frame, (center_x + 405, center_y - 5), 3, (0, 255, 255), -1)
+    else:
+        cv2.circle(frame, (center_x + 405, center_y), 3, (0, 255, 255), -1)
+        
+    # 画面上部に設定している機械名を表示
+    frame = draw_text(frame, f"Machine No. {machine_type}", (550, 5), font1, (0, 206, 209))
+    
+    # スペースキー動作のオン・オフ状態を画面に表示
+    space_status_text = ("ON" if space_action_enabled else "OFF")
+    frame = draw_text(frame, f"F4 to ON/OFF:", (15, 12), font1, (255, 255, 0))
+    if space_status_text == "ON":
+        frame = draw_text(frame, space_status_text, (280, 0), font2, (0, 255, 100))
+    else:
+        frame = draw_text(frame, space_status_text, (280, 0), font2, (255, 150, 0))
+
+    cv2.imshow(window_name, frame)
     
     # メッセージの点滅
     current_time = time.time()
@@ -214,13 +306,16 @@ while True:
 
     # ウィンドウがアクティブかどうかを確認
     window = gw.getWindowsWithTitle(window_name)
+    
     if window and window[0].isActive:
         if message_display:
-            cv2.putText(frame, "Select the cell to input", (center_x - 380, center_y - 200),
-                        cv2.FONT_HERSHEY_SIMPLEX, 2, (200, 0, 255), 4)
-
+            if space_status_text == "ON":
+                frame = draw_text(frame, "入力するセルを選択してください", (center_x - 380, center_y - 200), font2, (250, 50, 180))
+                
+    elif not message_display and space_status_text == "OFF":
+        frame = draw_text(frame, "機能がOFFになっています", (center_x - 300, center_y - 200), font2, (250, 50, 180))
+                
     cv2.imshow(window_name, frame)
-    
     key = cv2.waitKey(1)
 
     # ESCキーが押されたら処理を終了
@@ -230,13 +325,6 @@ while True:
     # ウィンドウが閉じられたら処理を終了
     if cv2.getWindowProperty('frame', cv2.WND_PROP_VISIBLE) < 1:
         break
-
-    elif keyboard.is_pressed("Space"):  # スペースキーが押された場合の処理
-        winsound.Beep(1000, 100)  # ビープ音を鳴らす
-        if last_value is not None:
-            converted_value = convert_value(round(last_value))  # 出力された値を変換
-            if converted_value is not None:
-                pyautogui.typewrite(str(converted_value) + '\n', interval=0.1)  # キーボード入力として出力
-        
+          
 cap.release()
 cv2.destroyAllWindows()
