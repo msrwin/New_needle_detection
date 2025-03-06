@@ -11,6 +11,51 @@ import configparser
 import pyautogui
 import pandas as pd
 from PIL import ImageFont, ImageDraw, Image
+from datetime import datetime
+import openpyxl
+
+# 日付を取得し、変数に記録
+current_date = datetime.now()
+year_only = current_date.year
+date_formatted = current_date.strftime("%Y-%m-%d")
+
+# Excelファイルをチェックする関数
+def check_excel_file():
+    excel_filename = rf"C:\Users\hinsyo\Desktop\ショア硬度計_データ取得\src\dist\{year_only}_始業点検.xlsx"
+    if not os.path.exists(excel_filename):
+        return False
+    
+    wb = openpyxl.load_workbook(excel_filename)
+    sheet = wb.active
+    
+    # A列の各セルの値を日付として比較
+    for cell in sheet['A']:
+        if isinstance(cell.value, datetime):
+            # Excelの日付を適切にフォーマット
+            cell_date = cell.value.strftime("%Y-%m-%d")
+            if cell_date == date_formatted:
+                return True
+    
+    return False
+
+# メインの監視ループ
+def monitor_excel_file():
+    while True:
+        found = check_excel_file()
+        if found:
+            print(f"本日の日付 '{date_formatted}' が見つかりました。")
+            break
+        else:
+            print(f"本日の日付は見つかりませんでした。再確認します...")
+        
+        # 一定時間待機（例：60秒）
+        time.sleep(60)
+
+# 監視を開始
+monitor_excel_file()
+
+# 始業点検のチェック結果
+inspection_completed = check_excel_file()
 
 # setting.iniファイルの保存先フォルダ
 config_folder = "C:/Users/hinsyo/Desktop/ショア硬度計_データ取得/src/dist"
@@ -130,7 +175,7 @@ def convert_value(output_value):
         converted_value = calibration_data.loc[calibration_data['測定値'] == output_value, '変換値'].values[0]
         return converted_value
     except IndexError:
-        messagebox.showwarning("警告", "換算値が見つかりませんでした。\n換算表を確認してください。")
+        # messagebox.showwarning("警告", "換算値が見つかりませんでした。\n換算表を確認してください。")
         return None
     
 # スペースキー動作のオン・オフ状態
@@ -164,8 +209,12 @@ def space_key_handler():
         if converted_value is not None:
             pyautogui.typewrite(str(converted_value) + '\n')  # キーボード入力として出力
 
+# メインループ内で使用する変数
+last_toggle_time = time.time()
+inspection_message_display = True
+
 while True:
-    ret, frame = cap.read()
+    ret, frame = cap.read() # 映像を画像としてframeに格納
 
     if not ret:
         print("カメラからフレームを読み取れませんでした。")
@@ -175,8 +224,8 @@ while True:
     frame = resize_frame(frame)
     cv2.imshow('frame', frame)
 
-    blurred = cv2.GaussianBlur(frame, (5, 5), 0)
-    gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(frame, (9, 9), 0) # ぼかしの調整（奇数）
+    gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY) # グレースケール処理
     edges = cv2.Canny(gray, canny_threshold1, canny_threshold2, apertureSize=3) # 線検出の閾値の設定
     lines = cv2.HoughLinesP(edges, 1, np.pi/150, needle_length, minLineLength=needle_length, maxLineGap=10)
 
@@ -189,7 +238,7 @@ while True:
             line_length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
             
             # 線の長さと角度に基づく条件を追加して不要な線を除外
-            if line_length > 100 and (needle_length <= abs(y2 - y1) <= 400 or needle_length <= abs(x2 - x1) <= 400):
+            if line_length > 80 and (needle_length <= abs(y2 - y1) <= 400 or needle_length <= abs(x2 - x1) <= 400):
                 if line_length > max_line_length:
                     max_line_length = line_length
                     selected_line = line[0]
@@ -198,9 +247,9 @@ while True:
             x1, y1, x2, y2 = selected_line
             line_theta = np.arctan2(y2 - y1, x2 - x1)
             theta_deg = (np.degrees(line_theta) + 360) % 360  # 0～360度に正規化
-
+            
             if 0 <= theta_deg <= 155:
-                calculated_value = 70 + (theta_deg / 155) * 70 - left_value_adjust  # 左半分の出力値調整
+                calculated_value = 70 + (theta_deg / 155) * 70 - 1 + left_value_adjust  # 左半分の出力値調整
             elif 305 <= theta_deg <= 320:
                 calculated_value = 70 - ((360 - theta_deg) / 155) * 70                    
             elif 205 <= theta_deg <= 360:
@@ -221,12 +270,12 @@ while True:
                     calculated_value = 129 + (theta_deg / 100) * 50 + 38  # 出力値微調整
 
             if calculated_value >= 128:
-                calculated_value = calculated_value - 60
+                last_value = calculated_value - 60
             else:
-                last_value = calculated_value
+                last_value = calculated_value - 2 + left_value_adjust
                 
                 if machine_type == "A926310": # 元器の場合の補正
-                    last_value = calculated_value - 0.5
+                    last_value = calculated_value - 0.7
 
             if theta_deg > 270 and calculated_value < 30:  # 30以下の処理
                 last_value = calculated_value
@@ -243,10 +292,15 @@ while True:
             if calculated_value > 71 and machine_type == "A926310": # 元器の場合の補正
                 last_value = calculated_value + 0.5
             
-            if 88.5 <= theta_deg <= 89:
-                last_value = 70
-            if 87.5 <= theta_deg <= 88.4:
+            if 86 <= theta_deg <= 88 and calculated_value >=128:
                 last_value = 69
+            
+            if 89 <= theta_deg <= 90:
+                last_value = 70 - left_value_adjust
+            if 88 <= theta_deg <= 89:
+                last_value = 69
+            if 272 <= theta_deg <= 272.5:
+                last_value = last_value + 1
             if 271 <= theta_deg <= 273.5 and machine_type == "A926310":
                 last_value = 71
             if theta_deg == 0 and machine_type == "A926310" or theta_deg == 270:
@@ -268,7 +322,7 @@ while True:
             frame = draw_text(frame, f"converted", (780, 820), font1, (50, 160, 255))
             frame = draw_text(frame, f"value", (860, 860), font1, (50, 160, 255))
             frame = draw_text(frame, f"⇒", (800, 920), font1, (50, 160, 255))
-            frame = draw_text(frame, f"{converted_value}", (860, 910), font2, (40, 140, 255))
+            frame = draw_text(frame, f"{converted_value}", (860, 910), font2, (40, 240, 255))
         else:
             frame = draw_text(frame, f"N/A", (860, 910), font2, (40, 140, 255))
 
@@ -278,10 +332,10 @@ while True:
     if machine_type == "A926310":
         cv2.circle(frame, (center_x - 420, center_y - 17), 3, (0, 255, 255), -1)
     else:
-        cv2.circle(frame, (center_x - 420, center_y), 3, (0, 255, 255), -1)
+        cv2.circle(frame, (center_x - 420, center_y - 7), 3, (0, 255, 255), -1)
     
     if machine_type == "A926310":
-        cv2.circle(frame, (center_x + 405, center_y - 5), 3, (0, 255, 255), -1)
+        cv2.circle(frame, (center_x + 405, center_y - 7), 3, (0, 255, 255), -1)
     else:
         cv2.circle(frame, (center_x + 405, center_y), 3, (0, 255, 255), -1)
         
@@ -301,8 +355,15 @@ while True:
     # メッセージの点滅
     current_time = time.time()
     if current_time - last_toggle_time >= message_interval:
+        inspection_message_display = not inspection_message_display
         message_display = not message_display
         last_toggle_time = current_time
+
+
+    # 始業点検メッセージの表示
+    if not inspection_completed and inspection_message_display:
+        frame = draw_text(frame, "始業点検が完了していません", (center_x - 400, center_y - 0), font2, (0, 0, 255))
+
 
     # ウィンドウがアクティブかどうかを確認
     window = gw.getWindowsWithTitle(window_name)
